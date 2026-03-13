@@ -1,0 +1,15 @@
+# Files 
+*.png
+
+# Python cache
+*.pyc
+*.pyo
+
+# Mac specific files
+.DS_Store
+
+# Environment variables
+.env
+
+# Virtual environment
+.venv/
