@@ -13,3 +13,12 @@
 
 # Virtual environment
 .venv/
+
+# Large Data Folder 
+data/gtzan/*
+data/mock/*
+
+# Large Model Files
+*.pth
+*.pt
+*.onnx
