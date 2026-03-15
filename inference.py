@@ -10,14 +10,12 @@ import sys
 sys.path.append(os.path.join(os.path.dirname(__file__), 'leaf-pytorch'))
 from main import AudioClassifier, GTZANDataset
 
-def predict(audio_path, model_path):
+def predict(audio_path, model_path) -> str | None:
     device = torch.device(
         'cuda' if torch.cuda.is_available() else
         'mps' if torch.backends.mps.is_available() else
         'cpu'
     )
-
-    print(f"Using device: {device}")
     
     # Initialize model
     model = AudioClassifier(num_classes=10).to(device)
@@ -89,6 +87,7 @@ def predict(audio_path, model_path):
     confidence = probabilities[predicted.item()].item() * 100
     
     print(f"\nPredicted Genre: {predicted_genre} (Confidence: {confidence:.2f}%)")
+    return predicted_genre
 
 def fetch_test_files(): 
     dataset = GTZANDataset()
@@ -104,9 +103,17 @@ def test_run(model_path):
     for audio_file, genre in files:
         print("-" * 50)
         print(f"Audio File: {Path(audio_file).name}, Genre: {genre}")
-        predict(audio_file, model_path)
+        predicted_genre = predict(audio_file, model_path)
+        print("Result: {}".format("POSITVE" if genre == predicted_genre else "NEGATIVE"))
     
 if __name__ == "__main__":
+    device = torch.device(
+        'cuda' if torch.cuda.is_available() else
+        'mps' if torch.backends.mps.is_available() else
+        'cpu'
+    )
+
+    print(f"Using device: {device}")
     parser = argparse.ArgumentParser(description="Music Genre Inference")
     parser.add_argument("--model", default="music_genre_classifier.pth", help="Path to the trained PyTorch model")
     parser.add_argument("--test", action="store_true", help="Make a prediction on all genre files from the GTZAN dataset.")
