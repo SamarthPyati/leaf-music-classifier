@@ -70,3 +70,12 @@ python inference.py <path_to_audio_file> --model <path_to_model_weights.pth>
 ```bash
 python inference.py data/mock/test_track.wav --model music_genre_classifier.pth
 ```
+
+#### Testing the Model
+To run predictions on a sample of test files from each genre in the GTZAN dataset:
+
+```bash
+python inference.py --test --model <path_to_model_weights.pth>
+```
+
+This will classify one file from each of the 10 genres and display the results.
