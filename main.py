@@ -71,10 +71,10 @@ class GTZANDataset(Dataset):
 
 # --- 2. Model Pipeline ---
 class AudioClassifier(nn.Module):
-    def __init__(self, num_classes=2, sample_rate=16000, n_filters=40):
+    def __init__(self, num_classes=10, sample_rate=16000, n_filters=40):
         super(AudioClassifier, self).__init__()
         
-        # LEAF Feature Extractor
+        # 1. Learnable Audio Frontend
         self.leaf = Leaf(
             sample_rate=sample_rate, 
             n_filters=n_filters,
@@ -82,43 +82,68 @@ class AudioClassifier(nn.Module):
             init_max_freq=7800.0
         )
         
-        # Simple CNN backbone acting on LEAF features (Batch, Filters, TimeFrames)
-        # Assuming input shape roughly: (B, 40, ~200) depending on audio length
-        self.conv1 = nn.Conv1d(in_channels=n_filters, out_channels=32, kernel_size=3, padding=1)
-        self.bn1 = nn.BatchNorm1d(32)
-        self.pool1 = nn.MaxPool1d(kernel_size=2)
-        self.drop1 = nn.Dropout(0.2)
+        # 2. 2D CNN Backbone
+        # Input shape from LEAF: (Batch, n_filters, Time)
+        # We will unsqueeze it to: (Batch, 1, n_filters, Time) to treat it as a 2D image
         
-        self.conv2 = nn.Conv1d(in_channels=32, out_channels=64, kernel_size=3, padding=1)
-        self.bn2 = nn.BatchNorm1d(64)
-        self.pool2 = nn.MaxPool1d(kernel_size=2)
-        self.drop2 = nn.Dropout(0.3)
+        self.conv_block1 = nn.Sequential(
+            nn.Conv2d(1, 32, kernel_size=3, padding=1),
+            nn.BatchNorm2d(32),
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=2),
+            nn.Dropout2d(0.2)
+        )
         
-        self.conv3 = nn.Conv1d(in_channels=64, out_channels=128, kernel_size=3, padding=1)
-        self.bn3 = nn.BatchNorm1d(128)
-        self.drop3 = nn.Dropout(0.4)
+        self.conv_block2 = nn.Sequential(
+            nn.Conv2d(32, 64, kernel_size=3, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=2),
+            nn.Dropout2d(0.3)
+        )
         
-        # Adaptive pooling to handle variable time frames, outputs (B, 128, 1)
-        self.adaptive_pool = nn.AdaptiveAvgPool1d(1)
+        self.conv_block3 = nn.Sequential(
+            nn.Conv2d(64, 128, kernel_size=3, padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=2),
+            nn.Dropout2d(0.3)
+        )
         
-        # Classifier head
-        self.fc = nn.Linear(128, num_classes)
+        self.conv_block4 = nn.Sequential(
+            nn.Conv2d(128, 256, kernel_size=3, padding=1),
+            nn.BatchNorm2d(256),
+            nn.ReLU(),
+            nn.AdaptiveAvgPool2d((1, 1)), # Pools (Freq, Time) down to 1x1
+            nn.Dropout(0.4)
+        )
+        
+        # 3. Classifier Head
+        self.fc1 = nn.Linear(256, 128)
+        self.dropout_fc = nn.Dropout(0.5)
+        self.fc2 = nn.Linear(128, num_classes)
 
     def forward(self, x):
-        # 1. LEAF frontend
-        x = self.leaf(x)
+        # 1. LEAF
+        x = self.leaf(x)  # Shape: (B, 40, Time)
         
-        # 2. CNN backbone
-        x = self.drop1(self.pool1(F.relu(self.bn1(self.conv1(x)))))
-        x = self.drop2(self.pool2(F.relu(self.bn2(self.conv2(x)))))
-        x = self.drop3(F.relu(self.bn3(self.conv3(x))))
+        # 2. Add channel dimension for 2D Convolutions
+        x = x.unsqueeze(1) # Shape: (B, 1, 40, Time)
         
-        # 3. Aggregate over time
-        x = self.adaptive_pool(x)
-        x = x.squeeze(-1) # (B, 128)
+        # 3. 2D Convolutions
+        x = self.conv_block1(x)
+        x = self.conv_block2(x)
+        x = self.conv_block3(x)
+        x = self.conv_block4(x)
         
-        # 4. Classify
-        x = self.fc(x)
+        # 4. Flatten
+        x = x.view(x.size(0), -1) # Shape: (B, 256)
+        
+        # 5. Fully Connected
+        x = F.relu(self.fc1(x))
+        x = self.dropout_fc(x)
+        x = self.fc2(x)
+        
         return x
 
 # --- 3. Minimal Training Loop ---
@@ -151,7 +176,9 @@ def train():
     model = AudioClassifier(num_classes=10).to(device)
     
     criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.001, weight_decay=1e-4)
+    # Add learning rate scheduler
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=3, verbose=True)
     
     epochs = 10
     print(f"Starting training for {epochs} epochs...")
@@ -199,6 +226,7 @@ def train():
                 all_preds.extend(predicted.cpu().numpy())
                 
         val_loss = val_loss / len(val_loader)
+        scheduler.step(val_loss)
         
         # Calculate Scikit-Learn Metrics (macro to aggregate correctly across 10 classes)
         val_acc = accuracy_score(all_targets, all_preds) * 100.
