@@ -8,7 +8,7 @@ import sys
 
 # Ensure leaf-pytorch is in path if not already
 sys.path.append(os.path.join(os.path.dirname(__file__), 'leaf-pytorch'))
-from main import AudioClassifier
+from main import AudioClassifier, GTZANDataset
 
 def predict(audio_path, model_path):
     device = torch.device(
@@ -89,11 +89,33 @@ def predict(audio_path, model_path):
     confidence = probabilities[predicted.item()].item() * 100
     
     print(f"\nPredicted Genre: {predicted_genre} (Confidence: {confidence:.2f}%)")
+
+def fetch_test_files(): 
+    dataset = GTZANDataset()
+    files = [dataset.__dict__['files'][(i + 1)*100 - 1] for i in range(10)]
+    return files
+
+def test_run(model_path):
+    if not Path(model_path).exists():
+        print("Model does not exists at path: ", model_path)
+        return 
+
+    files = fetch_test_files()
+    for audio_file, genre in files:
+        print("-" * 50)
+        print(f"Audio File: {Path(audio_file).name}, Genre: {genre}")
+        predict(audio_file, model_path)
     
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Music Genre Inference")
-    parser.add_argument("audio_path", help="Path to the audio file (.wav, .au, etc.)")
     parser.add_argument("--model", default="music_genre_classifier.pth", help="Path to the trained PyTorch model")
+    parser.add_argument("--test", action="store_true", help="Make a prediction on all genre files from the GTZAN dataset.")
+    parser.add_argument("audio_path", nargs="?", help="Path to the audio file (.wav, .au, etc.)")
     
     args = parser.parse_args()
-    predict(args.audio_path, args.model)
+    if args.test: 
+        test_run(args.model)
+    else: 
+        if not args.audio_path:
+            parser.error("audio_path is required when --test is not used")
+        predict(args.audio_path, args.model)
