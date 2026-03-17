@@ -1,154 +1,19 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from torch.utils.data import Dataset, DataLoader, random_split
+from torch.utils.data import DataLoader, random_split
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
-import soundfile as sf
-import os
-import sys
 
-# Ensure leaf-pytorch is in path
-sys.path.append(os.path.join(os.path.dirname(__file__), 'leaf-pytorch'))
-from leaf_pytorch.frontend import Leaf
-
-# --- 1. Dataset ---
-import torchaudio
-
-class GTZANDataset(Dataset):
-    def __init__(self, root="data/gtzan/genres_original", sample_rate=16000, duration=5.0):
-        self.root = root
-        self.target_sample_rate = sample_rate
-        self.max_length = int(sample_rate * duration)
-        
-        self.genres = [
-            "blues", "classical", "country", "disco", "hiphop",
-            "jazz", "metal", "pop", "reggae", "rock"
-        ]
-        self.genre_to_idx = {g: i for i, g in enumerate(self.genres)}
-        
-        self.files = []
-        for genre in self.genres:
-            genre_dir = os.path.join(root, genre)
-            if not os.path.exists(genre_dir):
-                continue
-            for f in os.listdir(genre_dir):
-                if f.endswith('.wav'):
-                    self.files.append((os.path.join(genre_dir, f), genre))
-
-    def __len__(self):
-        return len(self.files)
-
-    def __getitem__(self, idx):
-        file_path, label = self.files[idx]
-        
-        try:
-            waveform, sr = torchaudio.load(file_path)
-        except Exception:
-            # Some GTZAN files are known to be corrupted (e.g., jazz.00054.wav)
-            # Return a zero tensor if parsing fails
-            waveform = torch.zeros(1, self.max_length)
-            sr = self.target_sample_rate
-        
-        # Resample if needed
-        if sr != self.target_sample_rate:
-            resampler = torchaudio.transforms.Resample(orig_freq=sr, new_freq=self.target_sample_rate)
-            waveform = resampler(waveform)
-            
-        # Ensure mono
-        if waveform.shape[0] > 1:
-            waveform = torch.mean(waveform, dim=0, keepdim=True)
-            
-        # Pad or truncate
-        if waveform.shape[1] > self.max_length:
-            waveform = waveform[:, :self.max_length]
-        elif waveform.shape[1] < self.max_length:
-            pad_amount = self.max_length - waveform.shape[1]
-            waveform = F.pad(waveform, (0, pad_amount))
-            
-        label_idx = self.genre_to_idx[label]
-        return waveform, label_idx
-
-
-# --- 2. Model Pipeline ---
-class AudioClassifier(nn.Module):
-    def __init__(self, num_classes=10, sample_rate=16000, n_filters=40):
-        super(AudioClassifier, self).__init__()
-        
-        # 1. Learnable Audio Frontend
-        self.leaf = Leaf(
-            sample_rate=sample_rate, 
-            n_filters=n_filters,
-            init_min_freq=60.0,
-            init_max_freq=7800.0
-        )
-        
-        # 2. 2D CNN Backbone
-        # Input shape from LEAF: (Batch, n_filters, Time)
-        # We will unsqueeze it to: (Batch, 1, n_filters, Time) to treat it as a 2D image
-        
-        self.conv_block1 = nn.Sequential(
-            nn.Conv2d(1, 32, kernel_size=3, padding=1),
-            nn.BatchNorm2d(32),
-            nn.ReLU(),
-            nn.MaxPool2d(kernel_size=2),
-            nn.Dropout2d(0.2)
-        )
-        
-        self.conv_block2 = nn.Sequential(
-            nn.Conv2d(32, 64, kernel_size=3, padding=1),
-            nn.BatchNorm2d(64),
-            nn.ReLU(),
-            nn.MaxPool2d(kernel_size=2),
-            nn.Dropout2d(0.3)
-        )
-        
-        self.conv_block3 = nn.Sequential(
-            nn.Conv2d(64, 128, kernel_size=3, padding=1),
-            nn.BatchNorm2d(128),
-            nn.ReLU(),
-            nn.MaxPool2d(kernel_size=2),
-            nn.Dropout2d(0.3)
-        )
-        
-        self.conv_block4 = nn.Sequential(
-            nn.Conv2d(128, 256, kernel_size=3, padding=1),
-            nn.BatchNorm2d(256),
-            nn.ReLU(),
-            nn.AdaptiveAvgPool2d((1, 1)), # Pools (Freq, Time) down to 1x1
-            nn.Dropout(0.4)
-        )
-        
-        # 3. Classifier Head
-        self.fc1 = nn.Linear(256, 128)
-        self.dropout_fc = nn.Dropout(0.5)
-        self.fc2 = nn.Linear(128, num_classes)
-
-    def forward(self, x):
-        # 1. LEAF
-        x = self.leaf(x)  # Shape: (B, 40, Time)
-        
-        # 2. Add channel dimension for 2D Convolutions
-        x = x.unsqueeze(1) # Shape: (B, 1, 40, Time)
-        
-        # 3. 2D Convolutions
-        x = self.conv_block1(x)
-        x = self.conv_block2(x)
-        x = self.conv_block3(x)
-        x = self.conv_block4(x)
-        
-        # 4. Flatten
-        x = x.view(x.size(0), -1) # Shape: (B, 256)
-        
-        # 5. Fully Connected
-        x = F.relu(self.fc1(x))
-        x = self.dropout_fc(x)
-        x = self.fc2(x)
-        
-        return x
+from model import AudioClassifier
+from data.dataloader import GTZANDataset
 
 # --- 3. Minimal Training Loop ---
 def train():
-    device = torch.device('mps' if torch.backends.mps.is_available() else 'cpu')
+    device = torch.device(
+        'mps' if torch.backends.mps.is_available() else 
+        'cuda' if torch.cuda.is_available()
+        else 'cpu'
+    )
+
     print(f"Using device: {device}")
     
     # Setup data
@@ -178,7 +43,7 @@ def train():
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001, weight_decay=1e-4)
     # Add learning rate scheduler
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=3, verbose=True)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=3)
     
     epochs = 10
     print(f"Starting training for {epochs} epochs...")
